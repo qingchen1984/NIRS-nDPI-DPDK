@@ -1,0 +1,42 @@
+# Write to disk every 600 seconds
+write_by_time 600
+
+# Write to disk every 4 Mb of data
+# You can use these modificators: Kb, Mb, Gb
+# If you pass a value without modificator then size = N bytes
+write_by_size 4Gb
+
+# Parse mode
+# VALUES:
+# singlethread
+# multithread-for-proto
+# multithread-for-packet
+parse multithread-for-proto
+
+# Max threads
+max_threads 10
+
+# Output filename mask
+# Available templates:
+# %yyyy  - year
+# %MM    - month
+# %dd    - day
+# %hh    - hour (24)
+# %mm    - minute
+# %ss    - seconds
+# %zzz   - milliseconds
+# %pr    - proto
+
+output_filename packet_%yyyy/%MM/%dd-%hh:%mm:%ss.%zz
+
+# Output dirname mask
+output_subdirname proto_%pr
+
+# Output dir for result
+output_dir ./result
+
+# blacklist
+skip ip 192.168.1.1
+skip ip 192.168.1.2
+
+skip proto mqtt
