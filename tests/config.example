@@ -38,5 +38,15 @@ output_dir ./result
 # blacklist
 skip ip 192.168.1.1
 skip ip 192.168.1.2
+skip ip 192.168.1.1
+skip ip 192.168.1.2
+skip ip 192.168.1.1
+skip ip 192.168.1.2
+skip ip 192.168.1.1
+skip ip 192.168.1.2
 
-skip proto mqtt
+# Proto IDs can be found in include/ndpi_protocols_ids.h file from nDPI source
+# MQTT id = 222
+# GIT id = 226
+skip proto 222
+skip proto 226

@@ -21,20 +21,34 @@
 // Write to disk when size or time is more than specified value
 #define WRITE_BY_ANY  2
 
-typedef struct Config_s {
-    int         write_value_by_time;
-    long        write_value_by_size;
-    int         write_mode;
-    int         parse_mode;
-    int         max_threads;
-    char*       output_filename_mask;
-    char*       output_subdirname_mask;
-    char*       output_dir;
-    int*        proto_to_parse;
-    int*        proto_blacklist;
-    uint32_t*   ip_blacklist;
-} Config;
+/* ---BLACKLIST STRUCT (LIKE A VECTOR) --- */
 
-struct Config_s read_config(const char* file_path);
+typedef struct Blacklist {
+    int         arr_size;
+    int         arr_items_count;
+    uint32_t*   blocks;
+} Blacklist_s;
+
+
+/* ---CONFIG STRUCT--- */
+
+typedef struct Config {
+    int             write_value_by_time;
+    long            write_value_by_size;
+    int             write_mode;
+    int             parse_mode;
+    int             max_threads;
+    char*           output_filename_mask;
+    char*           output_subdirname_mask;
+    char*           output_dir;
+    int*            proto_to_parse;
+    Blacklist_s*    proto_blacklist;
+    Blacklist_s*    ip_blacklist;
+} Config_s;
+
+/* ---AVAILABLE METHODS--- */
+
+Config_s update_config_from_buf(Config_s config, char* buf);
+Config_s read_config(const char* file_path);
 
 #endif // CONFIGURATOR_H_

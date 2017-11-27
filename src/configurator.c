@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #define UNKNOWN_PARAM              -1
 #define WRITE_BY_TIME_PARAM         1
@@ -23,7 +24,7 @@ Parameter_s parse_config_line(char* buf)
 {
     size_t length = strlen(buf);
 
-    char* param_name = (char*) malloc(50);
+    char* param_name = (char*) malloc(50 * sizeof(char));
 
     sscanf(buf, "%s", param_name);
     Parameter_s param;
@@ -47,13 +48,55 @@ Parameter_s parse_config_line(char* buf)
 
     pos++; // Skip space after param name
 
-    param.value_string = malloc(length - pos);
+    param.value_string = malloc((length - pos) * sizeof(char));
     strncpy(param.value_string, (buf+pos), length-pos-1);
+
+    free(param_name);
+    param_name = NULL;
 
     return param;
 }
 
-struct Config_s update_config_from_buf(struct Config_s config, char* buf)
+// Increasing vector size
+void increase_blacklist(Blacklist_s** blacklist)
+{
+    Blacklist_s* new_blacklist = (Blacklist_s*) malloc(sizeof(Blacklist_s));
+    Blacklist_s* list = *blacklist;
+
+    if (list == NULL){
+        new_blacklist->arr_size = 4;
+        new_blacklist->arr_items_count = 0;
+        new_blacklist->blocks = malloc(new_blacklist->arr_size * sizeof(uint32_t));
+    }
+    else {
+        new_blacklist->arr_size = (list->arr_size > 128) ? list->arr_size + 128 : list->arr_size * 2;
+        new_blacklist->arr_items_count = list->arr_items_count;
+        new_blacklist->blocks = malloc(new_blacklist->arr_size * sizeof(uint32_t));
+        int i = 0;
+        for (; i < new_blacklist->arr_items_count; i++){
+            new_blacklist->blocks[i] = list->blocks[i];
+        }
+
+        free(*blacklist);
+    }
+
+    *blacklist = new_blacklist;
+
+    return;
+}
+
+uint32_t convert_ip_to_binary(unsigned char* ip)
+{
+    uint32_t binIp = (uint32_t) ip[0];
+
+    binIp = (binIp << 8) + ip[1];
+    binIp = (binIp << 8) + ip[2];
+    binIp = (binIp << 8) + ip[3];
+
+    return binIp;
+}
+
+Config_s update_config_from_buf(Config_s config, char* buf)
 {
     size_t length = strlen(buf);
     if (buf[0] == '#' || buf[0] == '\n') return config;
@@ -67,12 +110,14 @@ struct Config_s update_config_from_buf(struct Config_s config, char* buf)
             sscanf(current_param.value_string, "%li", &paramLong);
 
             config.write_value_by_time = (int) paramLong;
-            if (config.write_mode == WRITE_BY_SIZE) config.write_mode = WRITE_BY_ANY;
+            if (config.write_mode == WRITE_BY_SIZE || config.write_mode == WRITE_BY_ANY){
+                config.write_mode = WRITE_BY_ANY;
+            }
             else config.write_mode = WRITE_BY_TIME;
             break;
 
         case WRITE_BY_SIZE_PARAM: ;
-            char* sizeMod = (char*) malloc(3);
+            char* sizeMod = (char*) malloc(3 * sizeof(char));
 
             sscanf(current_param.value_string, "%li%s", &paramLong, sizeMod);
 
@@ -86,10 +131,19 @@ struct Config_s update_config_from_buf(struct Config_s config, char* buf)
                 case 'G':
                     paramLong *= 1024*1024*1024;
                     break;
+                case '\0':
+                    break;
+                default:
+                    break;
             }
 
+            free(sizeMod);
+            sizeMod = NULL;
+
             config.write_value_by_size = paramLong;
-            if (config.write_mode == WRITE_BY_TIME) config.write_mode = WRITE_BY_ANY;
+            if (config.write_mode == WRITE_BY_TIME || config.write_mode == WRITE_BY_ANY){
+                config.write_mode = WRITE_BY_ANY;
+            }
             else config.write_mode = WRITE_BY_SIZE;
             break;
 
@@ -118,13 +172,52 @@ struct Config_s update_config_from_buf(struct Config_s config, char* buf)
         case OUTPUT_DIRPATH_PARAM:
             config.output_dir = current_param.value_string;
             break;
+
+        case BLACKLIST_PARAM: ;
+            char* blacklist_type = (char*) malloc(50 * sizeof(char));
+            sscanf(current_param.value_string, "%s", blacklist_type);
+
+            if (strcmp(blacklist_type, "ip") == 0){
+                unsigned char* octets = (unsigned char*) malloc(4 * sizeof(unsigned char));
+                sscanf(
+                    current_param.value_string,
+                    "%s %hhu.%hhu.%hhu.%hhu",
+                    blacklist_type,
+                    &octets[0],
+                    &octets[1],
+                    &octets[2],
+                    &octets[3]);
+
+                if (config.ip_blacklist == NULL) increase_blacklist(&config.ip_blacklist);
+                else if (config.ip_blacklist->arr_items_count == config.ip_blacklist->arr_size){
+                    increase_blacklist(&config.ip_blacklist);
+                }
+
+                config.ip_blacklist->blocks[config.ip_blacklist->arr_items_count] = convert_ip_to_binary(octets);
+                config.ip_blacklist->arr_items_count++;
+            }
+            else if (strcmp(blacklist_type, "proto") == 0){
+                uint32_t protoId;
+                sscanf(current_param.value_string, "%s %u", blacklist_type, &protoId);
+
+                if (config.proto_blacklist == NULL) increase_blacklist(&config.proto_blacklist);
+                else if (config.proto_blacklist->arr_items_count == config.proto_blacklist->arr_size){
+                    increase_blacklist(&config.proto_blacklist);
+                }
+
+                config.proto_blacklist->blocks[config.proto_blacklist->arr_items_count] = protoId;
+                config.proto_blacklist->arr_items_count++;
+            }
+
+            free(blacklist_type);
+            blacklist_type = NULL;
     }
     return config;
 }
 
-struct Config_s read_config(const char* file_path)
+Config_s read_config(const char* file_path)
 {
-    struct Config_s config;
+    Config_s config;
 
     // Default values
     config.parse_mode = PARSE_SINGLETHREAD;
@@ -132,6 +225,8 @@ struct Config_s read_config(const char* file_path)
     config.output_filename_mask = "packet_%yyyy/%MM/%dd";
     config.output_subdirname_mask = "proto_%pr";
     config.write_mode = -1;
+    config.ip_blacklist = NULL;
+    config.proto_blacklist = NULL;
 
     FILE* file = fopen(file_path, "r");
 
@@ -148,6 +243,9 @@ struct Config_s read_config(const char* file_path)
         }
 
         fclose(file);
+
+        free(file_content);
+        file_content = NULL;
     }
 
     // Default values
@@ -157,8 +255,4 @@ struct Config_s read_config(const char* file_path)
     }
 
     return config;
-}
-
-uint32_t convert_ip_to_binary(char* ip) {
-
 }
