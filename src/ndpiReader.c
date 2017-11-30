@@ -142,9 +142,9 @@ static FILE*    playlist_fp[MAX_NUM_READER_THREADS] = {NULL}; /* Ingress playlis
 static FILE*    results_file                        = NULL;
 static char*    results_path                        = NULL;
 static char*    _protoFilePath                      = NULL;   /* Protocol file path           */
-static char*    results_dirname                     = NULL;
 static u_int8_t live_capture                        = 0;
 static u_int8_t undetected_flows_deleted            = 0;
+static u_int8_t save_to_dir                         = 0;
 
 /* User preferences */
 static u_int8_t       enable_protocol_guess  = 1;
@@ -199,6 +199,10 @@ static struct option longopts[] = {
 
     {0, 0, 0, 0}
 };
+
+// NIRS
+FILE*           result_files[NDPI_MAX_SUPPORTED_PROTOCOLS];
+pthread_mutex_t write_mutexes[NDPI_MAX_SUPPORTED_PROTOCOLS] = {PTHREAD_MUTEX_INITIALIZER};
 /* ********************* END VARIABLES ********************* */
 
 
@@ -314,6 +318,8 @@ static int acceptable(u_int32_t num_pkts);  // Heuristic choice for receiver sta
 // NIRS
 // ====
 void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id);
+void open_files(char* results_dirname);
+void close_files();
 /* ********************* END FUNCTIONS DEFENITION ********************* */
 
 
@@ -335,6 +341,8 @@ int main(int argc, char** argv)
         free(results_path);
     if(results_file)
         fclose(results_file);
+
+    close_files();
 
     return 0;
 }
@@ -461,15 +469,8 @@ static void parseOptions(int argc, char **argv)
 
             case 'z':
                 quiet_mode = 1;
-                printf("Parse option");
-                results_dirname = strdup(optarg);
-                struct stat st = {0};
-                if(stat(results_dirname, &st) == -1) {
-                    if(mkdir(results_dirname, 0700)) {
-                        fprintf(results_file ? results_file : stdout, "Can't create dir!\n");
-                        exit(-1);
-                    }
-                }
+                save_to_dir = 1;
+                open_files(strdup(optarg));
                 break;
 
             default:
@@ -1242,7 +1243,6 @@ void* processing_thread(void* _thread_id)
     long thread_id = (long) _thread_id;
     char pcap_error_buffer[PCAP_ERRBUF_SIZE];
 
-    #if defined(HAVE_PTHREAD_SETAFFINITY_NP)
     if(core_affinity[thread_id] >= 0) {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
@@ -1255,7 +1255,6 @@ void* processing_thread(void* _thread_id)
                 printf("Running thread %ld on core %d...\n", thread_id, core_affinity[thread_id]);
         }
     } else
-    #endif
         if(quiet_mode) printf("Running thread %ld...\n", thread_id);
 
     while(1) {
@@ -1585,7 +1584,7 @@ static void printResults(u_int64_t tot_usec)
         qsort(all_flows, num_flows, sizeof(struct flow_info), cmpFlows);
 
         for(i = 0; i < num_flows; i++) {
-            if(results_dirname != NULL)
+            if(save_to_dir)
                 save_parsed_protos(all_flows[i].flow, all_flows[i].thread_id);
         }
 
@@ -1601,7 +1600,7 @@ static void printResults(u_int64_t tot_usec)
         qsort(all_flows, num_flows, sizeof(struct flow_info), cmpFlows);
 
         for(i = 0; i < num_flows; i++) {
-            if(results_dirname != NULL)
+            if(save_to_dir)
                 save_parsed_protos(all_flows[i].flow, all_flows[i].thread_id);
         }
 
@@ -1831,32 +1830,66 @@ char* formatBytes(u_int32_t howMuch, char* buf, u_int buf_len)
 
 
 /* ********************* NIRS ********************* */
-void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id)
+void open_files(char* results_dirname)
 {
     FILE* file;
-    char filename[128];
-    char* master_proto;
-    char buf[64];
+    char  filename[2048];
+    char* proto_name;
 
-    if(flow->detected_protocol.master_protocol)
-        master_proto = ndpi_protocol2name(ndpi_thread_info[thread_id].workflow->ndpi_struct,
-                                                                            flow->detected_protocol, buf, sizeof(buf));
-    else
-        master_proto = ndpi_get_proto_name(ndpi_thread_info[thread_id].workflow->ndpi_struct,
-                                                                              flow->detected_protocol.app_protocol);
+    struct stat st = {0};
+    if(stat(results_dirname, &st) == -1) {
+        if(mkdir(results_dirname, 0700)) {
+            fprintf(results_file ? results_file : stdout, "Can't create dir!\n");
+            exit(-1);
+        }
+    }
 
-    sprintf(filename, "%s/%s", results_dirname, master_proto);
+    int i;
+    struct ndpi_detection_module_struct* mod = ndpi_init_detection_module();
+    for(i = 0; i < NDPI_MAX_SUPPORTED_PROTOCOLS; i++) {
+        proto_name = ndpi_get_proto_name(mod, i);
 
-    file = fopen(filename, "a");
-    if(!file)
-        fprintf(results_file ? results_file : stdout, "Can't create file!\n");
+        sprintf(filename, "%s/%s", results_dirname, proto_name);
 
-    if(!ftell(file))
+        file = fopen(filename, "a");
+        if(!file)
+            fprintf(results_file ? results_file : stdout, "Can't create file!\n");
+
         fprintf(file, "proto,ip_version,src_name,src_port,bidirectional,dst_name,dst_port,vlan_id,proto_name,"
-                                    "src2dst_packets,src2dst_bytes,dst2src_packets,dst2src_bytes,host_server_name,info,"
-                                    "ssh_ssl_client_info,ssh_ssl_server_info,bittorent_hash\n\n");
+                      "src2dst_packets,src2dst_bytes,dst2src_packets,dst2src_bytes,host_server_name,info,"
+                      "ssh_ssl_client_info,ssh_ssl_server_info,bittorent_hash\n\n");
+        result_files[i] = file;
+    }
+    set_ndpi_free((void*)mod);
+}
 
-    fprintf(file, "%s,%u,%s,%u,%u,%s,%u,%u,%s,%u,%lu,%u,%lu,%s,%s,%s,%s,%s\n",
+void close_files()
+{
+    if(save_to_dir) {
+        int i;
+        for(i = 0; i < NDPI_MAX_SUPPORTED_PROTOCOLS; i++)
+            fclose(result_files[i]);
+    }
+}
+
+void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id)
+{
+    char* proto_name;
+    char  buf[64];
+    int   proto_id;
+
+    if(flow->detected_protocol.master_protocol) {
+        proto_name = ndpi_protocol2name(ndpi_thread_info[thread_id].workflow->ndpi_struct,
+                                        flow->detected_protocol, buf, sizeof(buf));
+    }
+    else {
+        proto_name = ndpi_get_proto_name(ndpi_thread_info[thread_id].workflow->ndpi_struct,
+                                         flow->detected_protocol.app_protocol);
+    }
+    proto_id = flow->detected_protocol.app_protocol;
+
+    pthread_mutex_lock(&(write_mutexes[proto_id]));
+    fprintf(result_files[proto_id], "%s,%u,%s,%u,%u,%s,%u,%u,%s,%u,%lu,%u,%lu,%s,%s,%s,%s,%s\n",
             ipProto2Name(flow->protocol),                                   // %s
             flow->ip_version,                                               // %u
             flow->src_name,                                                 // %s
@@ -1865,70 +1898,17 @@ void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id)
             flow->dst_name,                                                 // %s
             ntohs(flow->dst_port),                                          // %u
             flow->vlan_id,                                                  // %u
-            master_proto,                                                   // %s
+            proto_name,                                                     // %s
             flow->src2dst_packets,                                          // %u
-            flow->src2dst_bytes,                                            // %llu
+            flow->src2dst_bytes,                                            // %lu
             flow->dst2src_packets,                                          // %u
-            flow->dst2src_bytes,                                            // %llu
+            flow->dst2src_bytes,                                            // %lu
             flow->host_server_name[0] ? flow->host_server_name : "",        // %s
             flow->info[0] ? flow->info : "",                                // %s
             flow->ssh_ssl.client_info[0] ? flow->ssh_ssl.client_info : "",  // %s
             flow->ssh_ssl.server_info[0] ? flow->ssh_ssl.server_info : "",  // %s
             flow->bittorent_hash[0] ? flow->bittorent_hash : "");           // %s
-
-    fclose(file);
+    pthread_mutex_unlock(&(write_mutexes[proto_id]));
 }
 
-void process_pcap()
-{
-    struct timeval end;
-    u_int64_t      tot_usec;
-    long           thread_id;
-
-    for(thread_id = 0; thread_id < num_threads; thread_id++) {
-        pcap_t* cap;
-
-        cap = openPcapFileOrDevice(thread_id, (const u_char*)_pcap_file[thread_id]);
-        setupDetection(thread_id, cap);
-    }
-
-    gettimeofday(&begin, NULL);
-
-    int   status;
-    void* thd_res;
-
-    /* Running processing threads */
-    for(thread_id = 0; thread_id < num_threads; thread_id++) {
-        status = pthread_create(&ndpi_thread_info[thread_id].pthread, NULL, processing_thread, (void *) thread_id);
-        if(status != 0) {
-            fprintf(stderr, "error on create %ld thread\n", thread_id);
-            exit(-1);
-        }
-    }
-    /* Waiting for completion */
-    for(thread_id = 0; thread_id < num_threads; thread_id++) {
-        status = pthread_join(ndpi_thread_info[thread_id].pthread, &thd_res);
-        if(status != 0) {
-            fprintf(stderr, "error on join %ld thread\n", thread_id);
-            exit(-1);
-        }
-        if(thd_res != NULL) {
-            fprintf(stderr, "error on returned value of %ld joined thread\n", thread_id);
-            exit(-1);
-        }
-    }
-
-    gettimeofday(&end, NULL);
-    tot_usec = end.tv_sec * 1000000 + end.tv_usec - (begin.tv_sec * 1000000 + begin.tv_usec);
-
-    /* Printing cumulative results */
-    printResults(tot_usec);
-
-    for(thread_id = 0; thread_id < num_threads; thread_id++) {
-        if(ndpi_thread_info[thread_id].workflow->pcap_handle != NULL)
-            pcap_close(ndpi_thread_info[thread_id].workflow->pcap_handle);
-
-        terminateDetection(thread_id);
-    }
-}
 /* ********************* END NIRS ********************* */
