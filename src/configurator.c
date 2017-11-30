@@ -32,14 +32,14 @@ Parameter_s parse_config_line(char* buf)
 
     param.key_id = UNKNOWN_PARAM;
 
-    if (strcmp(param_name, "write_by_time") == 0) param.key_id = WRITE_BY_TIME_PARAM;
-    if (strcmp(param_name, "write_by_size") == 0) param.key_id = WRITE_BY_SIZE_PARAM;
-    if (strcmp(param_name, "parse") == 0) param.key_id = PARSE_MODE_PARAM;
-    if (strcmp(param_name, "max_threads") == 0) param.key_id = MAX_THREADS_PARAM;
-    if (strcmp(param_name, "output_filename") == 0) param.key_id = OUTPUT_FILENAME_MASK_PARAM;
+    if (strcmp(param_name, "write_by_time")     == 0) param.key_id = WRITE_BY_TIME_PARAM;
+    if (strcmp(param_name, "write_by_size")     == 0) param.key_id = WRITE_BY_SIZE_PARAM;
+    if (strcmp(param_name, "parse")             == 0) param.key_id = PARSE_MODE_PARAM;
+    if (strcmp(param_name, "max_threads")       == 0) param.key_id = MAX_THREADS_PARAM;
+    if (strcmp(param_name, "output_filename")   == 0) param.key_id = OUTPUT_FILENAME_MASK_PARAM;
     if (strcmp(param_name, "output_subdirname") == 0) param.key_id = OUTPUT_DIRNAME_MASK_PARAM;
-    if (strcmp(param_name, "output_dir") == 0) param.key_id = OUTPUT_DIRPATH_PARAM;
-    if (strcmp(param_name, "skip") == 0) param.key_id = BLACKLIST_PARAM;
+    if (strcmp(param_name, "output_dir")        == 0) param.key_id = OUTPUT_DIRPATH_PARAM;
+    if (strcmp(param_name, "skip")              == 0) param.key_id = BLACKLIST_PARAM;
 
     int pos = 0;
     while (param_name[pos] != '\0' && pos < 50){

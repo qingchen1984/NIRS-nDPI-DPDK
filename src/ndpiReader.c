@@ -395,7 +395,7 @@ static void parseOptions(int argc, char **argv)
     int   opt;
     u_int num_cores = sysconf(_SC_NPROCESSORS_ONLN);
 
-    while ((opt = getopt_long(argc, argv, "d:g:i:hp:l:s:tv:n:j:rp:w:q:m:b:z:",
+    while ((opt = getopt_long(argc, argv, "d:g:i:hp:l:s:tv:n:j:rp:w:qm:b:z:",
                               longopts, &option_idx)) != EOF) {
         switch (opt) {
             case 'd':
@@ -460,7 +460,7 @@ static void parseOptions(int argc, char **argv)
                 break;
 
             case 'z':
-                verbose = 1;
+                quiet_mode = 1;
                 printf("Parse option");
                 results_dirname = strdup(optarg);
                 struct stat st = {0};
@@ -509,7 +509,7 @@ static void parseOptions(int argc, char **argv)
     }
 }
 
-static void setupDetection(u_int16_t thread_id, pcap_t * pcap_handle)
+static void setupDetection(u_int16_t thread_id, pcap_t* pcap_handle)
 {
 
     NDPI_PROTOCOL_BITMASK all;
@@ -1563,6 +1563,49 @@ static void printResults(u_int64_t tot_usec)
             printFlow(i + 1, all_flows[i].flow, all_flows[i].thread_id);
 
         free(all_flows);
+    } else {
+        u_int32_t total_flows = 0;
+
+        for(thread_id = 0; thread_id < num_threads; thread_id++)
+            total_flows += ndpi_thread_info[thread_id].workflow->num_allocated_flows;
+
+        if((all_flows = (struct flow_info*)malloc(sizeof(struct flow_info) * total_flows)) == NULL) {
+              printf("Fatal error: not enough memory\n");
+              exit(-1);
+        }
+
+        num_flows = 0;
+        for(thread_id = 0; thread_id < num_threads; thread_id++) {
+            for(i = 0; i < NUM_ROOTS; i++)
+                ndpi_twalk(ndpi_thread_info[thread_id].workflow->ndpi_flows_root[i],
+                           node_print_known_proto_walker,
+                           &thread_id);
+        }
+
+        qsort(all_flows, num_flows, sizeof(struct flow_info), cmpFlows);
+
+        for(i = 0; i < num_flows; i++) {
+            if(results_dirname != NULL)
+                save_parsed_protos(all_flows[i].flow, all_flows[i].thread_id);
+        }
+
+        num_flows = 0;
+        for(thread_id = 0; thread_id < num_threads; thread_id++) {
+            if(ndpi_thread_info[thread_id].workflow->stats.protocol_counter[0] > 0) {
+                for(i = 0; i < NUM_ROOTS; i++)
+                    ndpi_twalk(ndpi_thread_info[thread_id].workflow->ndpi_flows_root[i],
+                               node_print_unknown_proto_walker, &thread_id);
+            }
+        }
+
+        qsort(all_flows, num_flows, sizeof(struct flow_info), cmpFlows);
+
+        for(i = 0; i < num_flows; i++) {
+            if(results_dirname != NULL)
+                save_parsed_protos(all_flows[i].flow, all_flows[i].thread_id);
+        }
+
+        free(all_flows);
     }
 
     if(verbose == 3) {
@@ -1603,7 +1646,7 @@ static void printResults(u_int64_t tot_usec)
     }
 }
 
-static void printFlow(u_int16_t id, struct ndpi_flow_info *flow, u_int16_t thread_id)
+static void printFlow(u_int16_t id, struct ndpi_flow_info* flow, u_int16_t thread_id)
 {
     FILE* out = results_file ? results_file : stdout;
 
@@ -1655,9 +1698,6 @@ static void printFlow(u_int16_t id, struct ndpi_flow_info *flow, u_int16_t threa
         fprintf(out, "[BT Hash: %s]", flow->bittorent_hash);
 
     fprintf(out, "\n");
-
-    if(results_dirname != NULL)
-        save_parsed_protos(flow, thread_id);
 }
 
 void printPortStats(struct port_stats* stats)
@@ -1816,7 +1856,7 @@ void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id)
                                     "src2dst_packets,src2dst_bytes,dst2src_packets,dst2src_bytes,host_server_name,info,"
                                     "ssh_ssl_client_info,ssh_ssl_server_info,bittorent_hash\n\n");
 
-    fprintf(file, "%s,%u,%s,%u,%u,%s,%u,%u,%s,%u,%llu,%u,%llu,%s,%s,%s,%s,%s\n",
+    fprintf(file, "%s,%u,%s,%u,%u,%s,%u,%u,%s,%u,%lu,%u,%lu,%s,%s,%s,%s,%s\n",
             ipProto2Name(flow->protocol),                                   // %s
             flow->ip_version,                                               // %u
             flow->src_name,                                                 // %s
@@ -1837,5 +1877,58 @@ void save_parsed_protos(struct ndpi_flow_info* flow, u_int16_t thread_id)
             flow->bittorent_hash[0] ? flow->bittorent_hash : "");           // %s
 
     fclose(file);
+}
+
+void process_pcap()
+{
+    struct timeval end;
+    u_int64_t      tot_usec;
+    long           thread_id;
+
+    for(thread_id = 0; thread_id < num_threads; thread_id++) {
+        pcap_t* cap;
+
+        cap = openPcapFileOrDevice(thread_id, (const u_char*)_pcap_file[thread_id]);
+        setupDetection(thread_id, cap);
+    }
+
+    gettimeofday(&begin, NULL);
+
+    int   status;
+    void* thd_res;
+
+    /* Running processing threads */
+    for(thread_id = 0; thread_id < num_threads; thread_id++) {
+        status = pthread_create(&ndpi_thread_info[thread_id].pthread, NULL, processing_thread, (void *) thread_id);
+        if(status != 0) {
+            fprintf(stderr, "error on create %ld thread\n", thread_id);
+            exit(-1);
+        }
+    }
+    /* Waiting for completion */
+    for(thread_id = 0; thread_id < num_threads; thread_id++) {
+        status = pthread_join(ndpi_thread_info[thread_id].pthread, &thd_res);
+        if(status != 0) {
+            fprintf(stderr, "error on join %ld thread\n", thread_id);
+            exit(-1);
+        }
+        if(thd_res != NULL) {
+            fprintf(stderr, "error on returned value of %ld joined thread\n", thread_id);
+            exit(-1);
+        }
+    }
+
+    gettimeofday(&end, NULL);
+    tot_usec = end.tv_sec * 1000000 + end.tv_usec - (begin.tv_sec * 1000000 + begin.tv_usec);
+
+    /* Printing cumulative results */
+    printResults(tot_usec);
+
+    for(thread_id = 0; thread_id < num_threads; thread_id++) {
+        if(ndpi_thread_info[thread_id].workflow->pcap_handle != NULL)
+            pcap_close(ndpi_thread_info[thread_id].workflow->pcap_handle);
+
+        terminateDetection(thread_id);
+    }
 }
 /* ********************* END NIRS ********************* */
